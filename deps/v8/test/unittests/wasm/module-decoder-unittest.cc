@@ -61,7 +61,7 @@ namespace module_decoder_unittest {
     ModuleResult result = DecodeModule((data), (data) + sizeof((data))); \
     EXPECT_FALSE(result.ok());                                           \
     EXPECT_EQ(0u, result.val->exceptions.size());                        \
-  } while (0)
+  } while (false)
 
 #define X1(...) __VA_ARGS__
 #define X2(...) __VA_ARGS__, __VA_ARGS__
@@ -207,7 +207,7 @@ TEST_F(WasmModuleVerifyTest, WrongVersion) {
 }
 
 TEST_F(WasmModuleVerifyTest, DecodeEmpty) {
-  ModuleResult result = DecodeModule(nullptr, 0);
+  ModuleResult result = DecodeModule(nullptr, nullptr);
   EXPECT_TRUE(result.ok());
 }
 
@@ -476,11 +476,12 @@ TEST_F(WasmModuleVerifyTest, ZeroExceptions) {
 }
 
 TEST_F(WasmModuleVerifyTest, OneI32Exception) {
-  static const byte data[] = {
-      SECTION_EXCEPTIONS(3), 1,
-      // except[0] (i32)
-      1, kLocalI32,
-  };
+  static const byte data[] = {SECTION(Type, 1 + SIZEOF_SIG_ENTRY_v_x),
+                              1,
+                              SIG_ENTRY_v_x(kLocalI32),  // sig#0 (i32)
+                              SECTION_EXCEPTIONS(2),     // section header
+                              1,                         // # of exceptions
+                              IMPORT_SIG_INDEX(0)};      // except[0] (sig#0)
   FAIL_IF_NO_EXPERIMENTAL_EH(data);
 
   WASM_FEATURE_SCOPE(eh);
@@ -494,11 +495,17 @@ TEST_F(WasmModuleVerifyTest, OneI32Exception) {
 }
 
 TEST_F(WasmModuleVerifyTest, TwoExceptions) {
-  static const byte data[] = {SECTION_EXCEPTIONS(6), 2,
-                              // except[0] (f32, i64)
-                              2, kLocalF32, kLocalI64,
-                              // except[1] (i32)
-                              1, kLocalI32};
+  constexpr int SIZEOF_SIGs = SIZEOF_SIG_ENTRY_v_x + SIZEOF_SIG_ENTRY_v_xx;
+  static const byte data[] = {SECTION(Type, 1 + SIZEOF_SIGs), 2,
+                              // sig#0 (i32)
+                              SIG_ENTRY_v_x(kLocalI32),
+                              // sig#1 (f32, i64)
+                              SIG_ENTRY_v_xx(kLocalF32, kLocalI64),
+                              SECTION_EXCEPTIONS(3), 2,
+                              // except[0] (sig#1)
+                              IMPORT_SIG_INDEX(1),
+                              // except[1] (sig#0)
+                              IMPORT_SIG_INDEX(0)};
   FAIL_IF_NO_EXPERIMENTAL_EH(data);
 
   WASM_FEATURE_SCOPE(eh);
@@ -513,16 +520,97 @@ TEST_F(WasmModuleVerifyTest, TwoExceptions) {
   EXPECT_EQ(kWasmI32, e1.sig->GetParam(0));
 }
 
-TEST_F(WasmModuleVerifyTest, Exception_invalid_type) {
-  static const byte data[] = {SECTION_EXCEPTIONS(3), 1,
-                              // except[0] (?)
-                              1, 64};
+TEST_F(WasmModuleVerifyTest, Exception_invalid_sig_index) {
+  static const byte data[] = {SIGNATURES_SECTION_VOID_VOID,
+                              SECTION_EXCEPTIONS(2), 1,
+                              // except[0] (sig#23 [out-of-bounds])
+                              IMPORT_SIG_INDEX(23)};
   FAIL_IF_NO_EXPERIMENTAL_EH(data);
 
   // Should fail decoding exception section.
   WASM_FEATURE_SCOPE(eh);
   ModuleResult result = DecodeModule(data, data + sizeof(data));
   EXPECT_FALSE(result.ok());
+}
+
+TEST_F(WasmModuleVerifyTest, Exception_invalid_sig_return) {
+  static const byte data[] = {SECTION(Type, 1 + SIZEOF_SIG_ENTRY_x_x), 1,
+                              SIG_ENTRY_i_i, SECTION_EXCEPTIONS(2), 1,
+                              // except[0] (sig#0 [invalid-return-type])
+                              IMPORT_SIG_INDEX(0)};
+  FAIL_IF_NO_EXPERIMENTAL_EH(data);
+
+  // Should fail decoding exception section.
+  WASM_FEATURE_SCOPE(eh);
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_FALSE(result.ok());
+}
+
+TEST_F(WasmModuleVerifyTest, ExceptionSectionCorrectPlacement) {
+  static const byte data[] = {SECTION(Import, 1), 0, SECTION_EXCEPTIONS(1), 0,
+                              SECTION(Export, 1), 0};
+  FAIL_IF_NO_EXPERIMENTAL_EH(data);
+
+  WASM_FEATURE_SCOPE(eh);
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_OK(result);
+}
+
+TEST_F(WasmModuleVerifyTest, ExceptionSectionAfterExport) {
+  static const byte data[] = {SECTION(Export, 1), 0, SECTION_EXCEPTIONS(1), 0};
+  FAIL_IF_NO_EXPERIMENTAL_EH(data);
+
+  WASM_FEATURE_SCOPE(eh);
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_FALSE(result.ok());
+}
+
+TEST_F(WasmModuleVerifyTest, ExceptionSectionBeforeImport) {
+  static const byte data[] = {SECTION_EXCEPTIONS(1), 0, SECTION(Import, 1), 0};
+  FAIL_IF_NO_EXPERIMENTAL_EH(data);
+
+  WASM_FEATURE_SCOPE(eh);
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_FALSE(result.ok());
+}
+
+TEST_F(WasmModuleVerifyTest, ExceptionImport) {
+  static const byte data[] = {SIGNATURES_SECTION_VOID_VOID,
+                              SECTION(Import, 8),    // section header
+                              1,                     // number of imports
+                              NAME_LENGTH(1),        // --
+                              'm',                   // module name
+                              NAME_LENGTH(2),        // --
+                              'e',                   // exception name
+                              'x',                   // --
+                              kExternalException,    // import kind
+                              IMPORT_SIG_INDEX(0)};  // except[0] (sig#0)
+  FAIL_IF_NO_EXPERIMENTAL_EH(data);
+
+  WASM_FEATURE_SCOPE(eh);
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_OK(result);
+  EXPECT_EQ(1u, result.val->exceptions.size());
+  EXPECT_EQ(1u, result.val->import_table.size());
+}
+
+TEST_F(WasmModuleVerifyTest, ExceptionExport) {
+  static const byte data[] = {SIGNATURES_SECTION_VOID_VOID,
+                              SECTION_EXCEPTIONS(2),
+                              1,
+                              IMPORT_SIG_INDEX(0),  // except[0] (sig#0)
+                              SECTION(Export, 4),   // section header
+                              1,                    // number of exports
+                              NO_NAME,              // --
+                              kExternalException,   // --
+                              EXCEPTION_INDEX(0)};
+  FAIL_IF_NO_EXPERIMENTAL_EH(data);
+
+  WASM_FEATURE_SCOPE(eh);
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_OK(result);
+  EXPECT_EQ(1u, result.val->exceptions.size());
+  EXPECT_EQ(1u, result.val->export_table.size());
 }
 
 TEST_F(WasmModuleVerifyTest, OneSignature) {
@@ -2068,7 +2156,7 @@ TEST_F(WasmModuleVerifyTest, Regression684855) {
 
 class WasmInitExprDecodeTest : public TestWithZone {
  public:
-  WasmInitExprDecodeTest() {}
+  WasmInitExprDecodeTest() = default;
 
   WasmFeatures enabled_features_;
 
@@ -2221,6 +2309,81 @@ TEST_F(WasmModuleCustomSectionTest, TwoKnownTwoUnknownSections) {
   };
 
   CheckSections(data, data + sizeof(data), expected, arraysize(expected));
+}
+
+#define SRC_MAP                                                             \
+  16, 's', 'o', 'u', 'r', 'c', 'e', 'M', 'a', 'p', 'p', 'i', 'n', 'g', 'U', \
+      'R', 'L'
+TEST_F(WasmModuleVerifyTest, SourceMappingURLSection) {
+#define SRC 's', 'r', 'c', '/', 'x', 'y', 'z', '.', 'c'
+  static const byte data[] = {SECTION(Unknown, 27), SRC_MAP, 9, SRC};
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_TRUE(result.ok());
+  EXPECT_EQ(9u, result.val->source_map_url.size());
+  const char src[] = {SRC};
+  EXPECT_EQ(
+      0,
+      strncmp(reinterpret_cast<const char*>(result.val->source_map_url.data()),
+              src, 9));
+#undef SRC
+}
+
+TEST_F(WasmModuleVerifyTest, BadSourceMappingURLSection) {
+#define BAD_SRC 's', 'r', 'c', '/', 'x', 0xff, 'z', '.', 'c'
+  static const byte data[] = {SECTION(Unknown, 27), SRC_MAP, 9, BAD_SRC};
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_TRUE(result.ok());
+  EXPECT_EQ(0u, result.val->source_map_url.size());
+#undef BAD_SRC
+}
+
+TEST_F(WasmModuleVerifyTest, MultipleSourceMappingURLSections) {
+#define SRC 'a', 'b', 'c'
+  static const byte data[] = {SECTION(Unknown, 21),
+                              SRC_MAP,
+                              3,
+                              SRC,
+                              SECTION(Unknown, 21),
+                              SRC_MAP,
+                              3,
+                              'p',
+                              'q',
+                              'r'};
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_TRUE(result.ok());
+  EXPECT_EQ(3u, result.val->source_map_url.size());
+  const char src[] = {SRC};
+  EXPECT_EQ(
+      0,
+      strncmp(reinterpret_cast<const char*>(result.val->source_map_url.data()),
+              src, 3));
+#undef SRC
+}
+#undef SRC_MAP
+
+TEST_F(WasmModuleVerifyTest, MultipleNameSections) {
+#define NAME_SECTION 4, 'n', 'a', 'm', 'e'
+  static const byte data[] = {SECTION(Unknown, 11),
+                              NAME_SECTION,
+                              0,
+                              4,
+                              3,
+                              'a',
+                              'b',
+                              'c',
+                              SECTION(Unknown, 12),
+                              NAME_SECTION,
+                              0,
+                              5,
+                              4,
+                              'p',
+                              'q',
+                              'r',
+                              's'};
+  ModuleResult result = DecodeModule(data, data + sizeof(data));
+  EXPECT_TRUE(result.ok());
+  EXPECT_EQ(3u, result.val->name.length());
+#undef NAME_SECTION
 }
 
 #undef WASM_FEATURE_SCOPE
