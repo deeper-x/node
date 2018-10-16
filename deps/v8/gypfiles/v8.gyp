@@ -135,6 +135,7 @@
               'v8_target_cpu=<(v8_target_arch)',
               'v8_use_snapshot=<(v8_use_snapshot)',
               'v8_enable_embedded_builtins=<(v8_enable_embedded_builtins)',
+              'v8_enable_verify_csa=<(v8_enable_verify_csa)',
             ]
           },
           'conditions': [
@@ -1491,7 +1492,13 @@
         '../src/snapshot/partial-deserializer.h',
         '../src/snapshot/partial-serializer.cc',
         '../src/snapshot/partial-serializer.h',
+        '../src/snapshot/read-only-deserializer.cc',
+        '../src/snapshot/read-only-deserializer.h',
+        '../src/snapshot/read-only-serializer.cc',
+        '../src/snapshot/read-only-serializer.h',
         '../src/snapshot/references.h',
+        '../src/snapshot/roots-serializer.cc',
+        '../src/snapshot/roots-serializer.h',
         '../src/snapshot/serializer-common.cc',
         '../src/snapshot/serializer-common.h',
         '../src/snapshot/serializer.cc',
